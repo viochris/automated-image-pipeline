@@ -51,4 +51,4 @@ jobs:
         
         # Make sure your python file is named 'main.py' in the repo
         # If your file is named something else (e.g. img_bot.py), change it here.
-        run: python main.py
+        run: python img_bot.py
