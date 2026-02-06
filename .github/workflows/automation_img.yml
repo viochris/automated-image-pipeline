@@ -1,0 +1,54 @@
+name: Daily Image Generator Bot
+
+# TRIGGER: When should this workflow run?
+on:
+  schedule:
+    # Cron Format: 'Minute Hour * * *' (UTC Time)
+    # 00:00 UTC = 07:00 WIB (Western Indonesia Time)
+    - cron: '0 0 * * *'
+  
+  # Allows you to run this workflow manually from the Actions tab (for testing)
+  workflow_dispatch:
+
+# JOBS: What tasks to execute?
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest # Uses a standard Ubuntu runner provided by GitHub
+    
+    steps:
+      # 1. Checkout repository code
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        
+      # 2. Set up Python environment
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' # Ensure this matches your local Python version
+          
+      # 3. Install required libraries
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          # Installing specific libraries used in your script
+          pip install prefect gspread requests python-dotenv huggingface_hub Pillow
+        
+      # 4. CREATE JSON KEY FILE (IMPORTANT)
+      # Since we cannot upload 'chatbot_key.json' to GitHub (Security Risk),
+      # we store the CONTENT of the JSON file in a GitHub Secret named 'GCP_SA_KEY'.
+      # This step creates the physical file on the server so gspread can find it.
+      - name: Create Google Credentials File
+        run: echo '${{ secrets.GCP_SA_KEY }}' > chatbot_key.json
+
+      # 5. RUN THE SCRIPT
+      # We inject the secrets (API Keys) securely into the environment here
+      - name: Run Python Script
+        env:
+          # These must match os.getenv("...") in your Python script
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        
+        # Make sure your python file is named 'main.py' in the repo
+        # If your file is named something else (e.g. img_bot.py), change it here.
+        run: python main.py
