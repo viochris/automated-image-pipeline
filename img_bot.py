@@ -69,7 +69,8 @@ def get_prompt():
         # If a connection error occurs (e.g., Google API down)
         # We re-raise the error so Prefect knows to RETRY this task.
         print(f"❌ Connection Error: {e}")
-        raise e
+        # Raise a clean exception so Prefect knows to RETRY this task.
+        raise Exception("Google Sheets Connection Failed")
 
 @task(name="Generate Image", retries=3, retry_delay_seconds=5)
 def generate_img(prompt: str):
@@ -120,9 +121,9 @@ def generate_img(prompt: str):
         # Log the specific error to the console for debugging
         print(f"🔥 Generation Failed: {e}")
         
-        # Re-raise the exception so the Main Flow catches it 
+        # Re-raise a clean exception so the Main Flow catches it 
         # and logs it to the 'Done' worksheet.
-        raise e
+        raise Exception("Image Generation Failed")
 
 @task(name="Send to Telegram", retries=3, retry_delay_seconds=5)
 def to_telegram(caption, img):
@@ -149,20 +150,23 @@ def to_telegram(caption, img):
 
     print(f"🚀 Sending image to Telegram Chat ID: {TELEGRAM_CHAT_ID}...")
 
-    # 4. SEND REQUEST
-    response = requests.post(url, files=files, data=data)
-    
-    # 5. VALIDATE RESPONSE
-    if response.status_code == 200:
-        print("✅ Success: Message delivered to Telegram!")
-    else:
-        # If the API returns an error (e.g., 400 Bad Request, 401 Unauthorized)
-        print(f"❌ Telegram Refused: Status Code {response.status_code}")
-        print(f"📄 Error Details: {response.text}")
+    # 4. SEND REQUEST (Using the global session for stability)
+    try:
+        response = session.post(url, files=files, data=data)
         
-        # CRITICAL: Raise an exception so Prefect knows this task FAILED.
-        # This triggers the retry mechanism or logs the failure in the main flow.
-        raise Exception(f"Telegram API Error: {response.text}")    
+        # 5. VALIDATE RESPONSE
+        if response.status_code == 200:
+            print("✅ Success: Message delivered to Telegram!")
+        else:
+            # If the API returns an error (e.g., 400 Bad Request, 401 Unauthorized)
+            print(f"❌ Telegram Refused: Status Code {response.status_code}")
+            
+            # CRITICAL: Raise an exception so Prefect knows this task FAILED.
+            raise Exception(f"Telegram API Error: {response.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Network Error sending to Telegram.")
+        raise Exception("Telegram Connection Failed")
 
 @flow(name="Daily Image Generator Flow", log_prints=True)
 def main_flow():
@@ -183,8 +187,12 @@ def main_flow():
     try:
         ws_process, ws_done = get_google_sheets()
     except Exception as e:
-        print(f"❌ Gagal konek Sheet di awal Flow: {e}")
-        raise e
+        # SAFE LOGGING: Connection errors usually don't leak secrets, 
+        # but it's better to be generic just in case.
+        print("❌ CRITICAL ERROR: Failed to connect to Google Sheets.")
+        print("   (Check credentials.json or API limits)")
+        # STOP execution by raising the error
+        raise Exception("Google Sheets Connection Failed")
 
     try:
         # 2. FETCH PROMPT
@@ -197,7 +205,7 @@ def main_flow():
             return
 
         # 3. GENERATE IMAGE
-        # Calls the Fal AI task. Returns bytes (RAM).
+        # Calls the task. Returns bytes (RAM).
         img_bytes = generate_img(prompt_text)
 
         # 4. SEND TO TELEGRAM
@@ -215,12 +223,38 @@ def main_flow():
         ws_process.delete_rows(2)
 
     except Exception as e:
-        # 7. ERROR HANDLING (Graceful Failure)
-        # Instead of crashing, we catch the error to log it in the spreadsheet.
-        print(f"🔥 Flow Failed: {e}")
+        # 7. ERROR HANDLING (Safe & Graceful Failure)
         last_status = "FAILED"
-        status_information = str(e) # Convert the error object to a string
-        raise e
+        
+        # Convert error to string for analysis (internal only)
+        error_str = str(e).lower()
+        
+        # --- SAFE ERROR CATEGORIZATION ---
+        # We define a "Clean Message" to print and save to Sheets.
+        # This prevents the raw URL (with Token) from being saved.
+
+        if "connection" in error_str or "max retries" in error_str:
+            clean_msg = "Network/Connection Error (Internet or DNS)"
+        elif "401" in error_str or "unauthorized" in error_str:
+            clean_msg = "Authentication Error (Check API Keys)"
+        elif "429" in error_str or "quota" in error_str:
+            clean_msg = "Rate Limit / Quota Exceeded"
+        elif "timeout" in error_str:
+            clean_msg = "Operation Timed Out"
+        elif "json" in error_str or "decode" in error_str:
+            clean_msg = "API Response Error (Invalid JSON)"
+        else:
+            clean_msg = "Internal Error (Details hidden for security)"
+
+        # Print the CLEAN message to console
+        print(f"🔥 Flow Failed: {clean_msg}")
+        
+        # Save the CLEAN message to the status variable (for the Sheet)
+        status_information = clean_msg 
+        
+        # We raise the exception using the CLEAN message.
+        # This ensures Prefect marks the flow as Failed, but the log remains safe.
+        raise Exception(clean_msg)
 
     finally:
         # 8. LOGGING (Always Runs)
