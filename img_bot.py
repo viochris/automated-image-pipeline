@@ -150,9 +150,9 @@ def to_telegram(caption, img):
 
     print(f"🚀 Sending image to Telegram Chat ID: {TELEGRAM_CHAT_ID}...")
 
-    # 4. SEND REQUEST (Using the global session for stability)
+    # 4. SEND REQUEST
     try:
-        response = session.post(url, files=files, data=data)
+        response = requests.post(url, files=files, data=data)
         
         # 5. VALIDATE RESPONSE
         if response.status_code == 200:
