@@ -258,9 +258,14 @@ def main_flow():
 
     finally:
         # 8. LOGGING (Always Runs)
-        # Whether successful or failed, we record the attempt in the 'Done' sheet.
-        print("📝 Logging result to spreadsheet...")
-        ws_done.append_row([prompt_text, last_status, status_information, current_time])
+        # --- SAFE NESTED TRY-EXCEPT (NO RAW ERROR PRINTING) ---
+        try:
+            print("📝 Logging result to spreadsheet...")
+            ws_done.append_row([prompt_text, last_status, status_information, current_time])
+        except Exception:
+            # We DO NOT print 'final_e' here to avoid any potential leaks.
+            # We just print a generic static message.
+            print("❌ Final Logging Failed: Google Sheets not accessible or Network Error.")
 
 if __name__ == "__main__":
     # ==========================================
