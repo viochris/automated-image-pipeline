@@ -117,13 +117,60 @@ def generate_img(prompt: str):
         return img_bytes_arr
 
     except Exception as e:
-        # 5. ERROR HANDLING
-        # Log the specific error to the console for debugging
-        print(f"🔥 Generation Failed: {e}")
-        
-        # Re-raise a clean exception so the Main Flow catches it 
-        # and logs it to the 'Done' worksheet.
-        raise Exception("Image Generation Failed")
+        # 5. SAFE ERROR HANDLING
+        # We convert the error to a string for analysis but avoid printing the raw error
+        # directly if possible, to prevent leaking sensitive tokens in logs.
+        error_str = str(e).lower()
+
+        # --- DETECT ERROR TYPE SAFELY ---
+
+        # CASE 1: Authentication Error (Wrong Token)
+        if "401" in error_str or "unauthorized" in error_str or "token" in error_str:
+            clean_msg = "🔒 AUTH ERROR: Hugging Face Token is invalid or missing."
+            print(clean_msg)
+            # Critical error: Stop execution immediately.
+            raise ValueError(clean_msg)
+
+        # CASE 2: Rate Limit (Free tier limits)
+        elif "429" in error_str:
+            clean_msg = "⏳ RATE LIMIT: Hugging Face API limit reached. Please wait."
+            print(clean_msg)
+            # Raise exception to trigger Prefect retries.
+            raise Exception(clean_msg)
+
+        # CASE 3: Model Loading (Common in HF Inference API)
+        # This usually resolves itself after a few seconds.
+        elif "503" in error_str or "loading" in error_str:
+            clean_msg = "🏗️ MODEL BUSY: The model is currently loading on Hugging Face servers."
+            print(clean_msg)
+            # Raise exception to trigger Prefect retries.
+            raise Exception(clean_msg)
+
+        # CASE 4: Network/Connection Errors
+        elif "connection" in error_str or "max retries" in error_str:
+            clean_msg = "❌ NETWORK ERROR: Failed to connect to Hugging Face API."
+            print(clean_msg)
+            # Raise exception to trigger Prefect retries.
+            raise Exception(clean_msg)
+
+        # CASE 5: API Key Quota / Credit Depleted (Business Logic)
+        # This checks for specific billing error messages.
+        elif "credit balance" in error_str or "depleted" in error_str:
+            warning_msg = "💳 QUOTA EXCEEDED: Your Hugging Face credit balance is depleted. Purchase credits or upgrade to Pro."
+            print(f"Status: {warning_msg}")
+            
+            # NOTE: We RETURN the warning string here instead of raising an exception.
+            # This allows the Main Flow to catch this specific string and send it 
+            # as a notification message to the Telegram user.
+            return warning_msg
+
+        # CASE 6: Unknown Error
+        else:
+            print("🔥 GENERATION FAILED: An unknown error occurred during image generation.")
+            print("   (Raw error details hidden for security)")
+            
+            # Raise a generic exception to mark the task as Failed.
+            raise Exception("Unknown Image Generation Error")
 
 @task(name="Send to Telegram", retries=3, retry_delay_seconds=5)
 def to_telegram(caption, img):
@@ -168,6 +215,59 @@ def to_telegram(caption, img):
         print(f"❌ Network Error sending to Telegram.")
         raise Exception("Telegram Connection Failed")
 
+@task(name="Send Information to Telegram", retries=3, retry_delay_seconds=5)
+def send_information(information):
+    # 1. Validate Credentials
+    if not TELEGRAM_TOKEN and not TELEGRAM_CHAT_ID:
+        error_msg = "Error: Telegram credentials are missing."
+        print(error_msg)
+        # We raise an error so Prefect knows the task failed
+        raise ValueError(error_msg)
+
+    # 2. Prepare URL and Payload
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": information,
+        "parse_mode": "Markdown"
+    }
+
+    # 3. Log the attempt
+    print(f"🚀 Sending Information with Telegram Chat ID: {TELEGRAM_CHAT_ID}...")
+
+    try:
+        # 4. Send POST request
+        response = requests.post(url, json=data)
+        
+        # 5. Check HTTP Status
+        if response.status_code == 200:
+            print("Message sent successfully.")
+        else:
+            # If Telegram refuses, we log it and RAISE an exception to trigger Prefect retry
+            error_details = f"Telegram API Refused: {response.status_code} - {response.text}"
+            print(error_details)
+            raise Exception(error_details)
+            
+    except Exception as e:
+        # 6. Handle Network/Connection Errors
+        error_str = str(e).lower()
+        clean_error_msg = ""
+
+        if "connection" in error_str or "dns" in error_str:
+            clean_error_msg = "Network Error: Failed to connect to Telegram API."
+        elif "timeout" in error_str:
+            clean_error_msg = "Timeout Error: Telegram API did not respond."
+        elif "ssl" in error_str:
+            clean_error_msg = "SSL Error: Certificate verification failed."
+        else:
+            clean_error_msg = f"Transmission Failed: {e}"
+
+        print(clean_error_msg)
+        
+        # CRITICAL: Re-raise the exception so Prefect counts this as a failure and retries
+        raise Exception(clean_error_msg)
+
 @flow(name="Daily Image Generator Flow", log_prints=True)
 def main_flow():
     """
@@ -205,22 +305,42 @@ def main_flow():
             return
 
         # 3. GENERATE IMAGE
-        # Calls the task. Returns bytes (RAM).
-        img_bytes = generate_img(prompt_text)
+        # Calls the task. Can return: Bytes (Success), String (Warning), or None (Critical Error).
+        result = generate_img(prompt_text)
 
-        # 4. SEND TO TELEGRAM
-        # We use the prompt text as the caption so we know what generated the image.
-        to_telegram(caption=prompt_text, img=img_bytes)
+        # --- CHECK RESULT TYPE ---
+        if result is None:
+            # CASE A: CRITICAL SERVER ERROR (Result is None)
+            print("❌ Failed to generate image. Stopping flow.")
+            send_information("❌ Sorry, failed to generate image due to server error.")
 
-        # 5. UPDATE STATUS (If we reach here, everything succeeded)
-        last_status = "SUCCESS"
-        status_information = "Image sent to Telegram successfully."
+            last_status = "FAILED"
+            status_information = "❌ Sorry, failed to generate image due to server error."   
+            
+        elif isinstance(result, str):
+            # CASE B: SPECIFIC WARNING / QUOTA LIMIT (Result is Text)
+            # We send the warning text directly to the user.
+            send_information(result)
 
-        # 6. CLEAN UP QUEUE (CRITICAL FIX)
-        # We delete ROW 2 (the data we just used), not the column.
-        # This ensures the next run picks up the next prompt.
-        print("🧹 Cleaning up processed row...")
-        ws_process.delete_rows(2)
+            last_status = "FAILED"
+            status_information = result
+            
+        else:
+            # CASE C: SUCCESS (Result is Image Bytes)
+            
+            # 4. SEND TO TELEGRAM
+            # We use the prompt text as the caption so we know what generated the image.
+            to_telegram(caption=prompt_text, img=result)
+
+            # 5. UPDATE STATUS (Success)
+            last_status = "SUCCESS"
+            status_information = "Image sent to Telegram successfully."
+
+            # 6. CLEAN UP QUEUE (CRITICAL FIX)
+            # We delete ROW 2 (the data we just used), not the column.
+            # This ensures the next run picks up the next prompt.
+            print("🧹 Cleaning up processed row...")
+            ws_process.delete_rows(2)
 
     except Exception as e:
         # 7. ERROR HANDLING (Safe & Graceful Failure)
