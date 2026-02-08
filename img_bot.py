@@ -3,7 +3,7 @@ import io
 import time
 import requests
 import gspread
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from prefect import flow, task
 from huggingface_hub import InferenceClient
@@ -281,8 +281,8 @@ def main_flow():
     last_status = "UNKNOWN"
     status_information = "Process Started"
     
-    # Get current server time for the log
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Get current server time (UTC) and convert to WIB (UTC+7)
+    current_time = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
 
     try:
         ws_process, ws_done = get_google_sheets()
