@@ -12,6 +12,24 @@
 
 Orchestrated by **Prefect**, this bot acts as a bridge between your ideas and your audience. It extracts text prompts from a Google Sheet, transforms them into high-quality images using **Hugging Face's Inference API** (Stable Diffusion XL / Flux), and instantly publishes them to a **Telegram Channel**. It features "Do-or-Die" connection logic, automated queue management, and comprehensive activity logging.
 
+### 🔗 The "Creative Ecosystem"
+This project is designed to act as the **Consumer** (Image Generator) in a larger automated creative workflow. To keep your queue full without manual typing, you can pair it with one of our **Producer Bots**:
+
+* **Option A: [Standard Prompt Generator](https://github.com/viochris/daily-prompt-generator-bot)**
+    * **Best for:** Maintenance Mode (1-for-1 replacement).
+    * **How it works:** Wakes up and crafts exactly **1 highly detailed prompt** using Gemini AI, then appends it to the queue.
+    * **Scheduling:** Ideal for "Replenishment" logic (see Pro Tips below).
+
+* **Option B: [Batch Prompt Generator](https://github.com/viochris/daily-batch-prompt-bot)**
+    * **Best for:** High-volume pipelines or filling an empty queue fast.
+    * **How it works:** Generates exactly **3 unique prompts** in a single run (customizable to 5+ via script) and bulk-uploads them to the queue.
+    * **Scheduling:** Run this once to fuel the Image Bot for multiple runs throughout the day.
+
+**💡 Pro Tips:**
+1. **Sequential Scheduling (Standard):** Keep them as separate GitHub Actions workflows but time them close together.
+   * *Example:* Set Prompt Bot to run at `06:00` (Producer) and Image Bot at `06:15` (Consumer). This ensures fresh data is ready before consumption.
+2. **Replenishment Logic (Loop):** If your spreadsheet already has a backlog, you can reverse the order! **Run Image Gen First** (consume 1), then **Run Prompt Gen Immediately After** (create 1). This creates a "Perpetual Loop" where the queue size remains constant.
+
 ## ✨ Key Features
 
 ### 🤖 AI-Powered Generation
