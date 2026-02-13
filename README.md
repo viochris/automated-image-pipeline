@@ -85,8 +85,7 @@ cd automated-image-pipeline
 
 2. **Install Dependencies**
 ```bash
-pip install -r requirements.txt
-# Requires: prefect, gspread, huggingface_hub, python-dotenv, requests, pillow
+pip install prefect gspread huggingface_hub python-dotenv requests pillow
 ```
 
 3. **Run the Automation**
